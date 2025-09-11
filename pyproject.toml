@@ -28,7 +28,8 @@ dependencies = [
   "pyarrow>=15.0.0",
   "tomli >= 1.1.0 ; python_version < '3.11'",
   "prometheus_client>=0.20.0",
-  "buffered @ git+https://github.com/generalmattza/buffered.git@v1.0.1",
+  # "buffered @ git+https://github.com/generalmattza/buffered.git@v1.0.1",
+  "buffered",
 ]
 
 # If a module, then use fetch version from src/module_name/__init__.py
@@ -38,7 +39,8 @@ version = { attr = "metrics_processor.__version__" }
 [project.optional-dependencies]
 test = [
   "pytest >= 8.0.0",
-  "mqtt-node-network @ git+https://github.com/generalmattza/mqtt-node-network.git@v1.3.1",
+  "mqtt-node-network",
+  # "mqtt-node-network @ git+https://github.com/generalmattza/mqtt-node-network.git@v1.3.1",
 ]
 
 [project.urls]
@@ -46,3 +48,6 @@ homepage = "https://davidson.engineering"
 repository = "https://github.com/davidson-engineering/metrics-processor"
 # documentation = "https://readthedocs.org"
 # changelog = "https://github.com/me/spam/blob/master/CHANGELOG.md"
+
+[tool.uv]
+package = true
