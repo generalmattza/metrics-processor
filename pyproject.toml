@@ -39,11 +39,8 @@ test = [
 ]
 
 [tool.uv.sources]
-buffered = { workspace = true }
-mqtt-node-network = { workspace = true }
-# buffered = { git = "https://github.com/generalmattza/buffered.git", rev = "v1.0.1" }
-# mqtt-node-network = { git = "https://github.com/generalmattza/mqtt-node-network.git", rev = "v2.2.4" }
-# python-config-loader = { git = "https://github.com/generalmattza/python-config-loader.git", rev = "v0.1.3" }
+buffered = { git = "https://github.com/generalmattza/buffered.git", rev = "v1.0.1" }
+mqtt-node-network = { git = "https://github.com/generalmattza/mqtt-node-network.git", rev = "v2.2.4" }
 
 [project.urls]
 homepage = "https://davidson.engineering"
