@@ -64,12 +64,13 @@ def expand_metric_fields(original_dict):
     metrics_expanded = []
 
     for field, value in original_dict["fields"].items():
-        new_dict = {
-            "measurement": original_dict["measurement"],
-            "fields": {field: value},
-            "tags": original_dict.get("tags", {}),
-            "time": original_dict.get("time", {}),
-        }
+        # Start with a shallow copy of the original dict to preserve all top-level fields
+        new_dict = original_dict.copy()
+        # Deep copy nested dicts to avoid reference issues
+        if "tags" in new_dict and isinstance(new_dict["tags"], dict):
+            new_dict["tags"] = new_dict["tags"].copy()
+        # Override fields with single field
+        new_dict["fields"] = {field: value}
         metrics_expanded.append(new_dict)
 
     return metrics_expanded
@@ -387,6 +388,100 @@ class FieldExpander(MetricsPipeline):
     def process_method(self, metrics):
         metrics = expand_metrics(metrics)
         return metrics
+
+
+class FieldToTagMapper(MetricsPipeline):
+    """
+    Transform field names to field+tag combinations based on expansion_pattern.
+
+    This pipeline stage applies regex-based transformations to field names,
+    extracting portions of the field name into tags while standardizing the field name.
+
+    Example:
+        Input metric:
+            fields: {"DUTY_CYCLE_1": 45.2}
+            expansion_pattern:
+                pattern: "^DUTY_CYCLE_(\\d+)$"
+                field_name: "DUTY_CYCLE"
+                extract_tags:
+                    - name: "channel"
+                      group: 1
+
+        Output metric:
+            fields: {"DUTY_CYCLE": 45.2}
+            tags: {...existing_tags..., "channel": "1"}
+    """
+
+    def process_method(self, metrics):
+        result = []
+        for metric in metrics:
+            # Check if this metric has an expansion_pattern
+            expansion_pattern = metric.get('expansion_pattern')
+            if expansion_pattern:
+                metric = self._apply_expansion_pattern(metric, expansion_pattern)
+                # Remove expansion_pattern from metric after applying
+                metric.pop('expansion_pattern', None)
+            result.append(metric)
+        return result
+
+    def _apply_expansion_pattern(self, metric: dict, pattern_config: dict) -> dict:
+        """
+        Apply the expansion pattern to transform field names into field+tag combinations.
+
+        Args:
+            metric: The metric dict with fields, tags, measurement, time, etc.
+            pattern_config: Dict with keys: pattern, field_name, extract_tags
+
+        Returns:
+            Modified metric dict with transformed fields and updated tags
+        """
+        pattern_str = pattern_config.get('pattern')
+        new_field_name = pattern_config.get('field_name')
+        extract_tags = pattern_config.get('extract_tags', [])
+
+        if not pattern_str or not new_field_name:
+            logger.warning(f"Invalid expansion_pattern config: {pattern_config}")
+            return metric
+
+        try:
+            pattern = re.compile(pattern_str)
+        except re.error as e:
+            logger.error(f"Invalid regex pattern '{pattern_str}': {e}")
+            return metric
+
+        # Process each field in the metric
+        new_fields = {}
+        updated_tags = metric.get('tags', {}).copy()
+
+        for field_name, field_value in metric.get('fields', {}).items():
+            match = pattern.match(field_name)
+            if match:
+                # Pattern matched - transform the field
+                new_fields[new_field_name] = field_value
+
+                # Extract tags from capture groups
+                for tag_config in extract_tags:
+                    tag_name = tag_config.get('name')
+                    group_num = tag_config.get('group')
+
+                    if tag_name and group_num is not None:
+                        try:
+                            tag_value = match.group(group_num)
+                            updated_tags[tag_name] = str(tag_value)
+                        except IndexError:
+                            logger.warning(
+                                f"Regex group {group_num} not found in pattern '{pattern_str}' "
+                                f"for field '{field_name}'"
+                            )
+            else:
+                # Pattern didn't match - keep original field name
+                new_fields[field_name] = field_value
+
+        # Update metric with new fields and tags
+        metric['fields'] = new_fields
+        metric['tags'] = updated_tags
+
+        return metric
 
 
 class Formatter(MetricsPipeline):
