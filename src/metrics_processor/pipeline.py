@@ -259,7 +259,7 @@ class MetricsPipeline(ABC):
         if metrics:
             results = self.process_method(metrics)
         else:
-            logger.info(
+            logger.debug(
                 f"No metrics to process in {self.__class__.__name__}. Continuing"
             )
             return None

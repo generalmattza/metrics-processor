@@ -184,12 +184,23 @@ class MetricsProcessor:
             if self.input_buffer.not_empty():
                 # dump buffer to list of metrics
                 metrics = self.input_buffer.dump(self.batch_size_processing)
+                initial_count = len(metrics)
+
+                # Extract unique measurements for context (before processing)
+                measurements = set()
+                for m in metrics:
+                    if isinstance(m, dict) and 'measurement' in m:
+                        measurements.add(m['measurement'])
+
+                # Get stage names
+                stage_names = [p.__class__.__name__ for p in self.pipelines]
+
                 for pipeline in self.pipelines:
                     try:
                         number_metrics_initial = len(metrics)
                         metrics = pipeline.process(metrics)
                         number_metrics_final = len(metrics)
-                        logger.info(
+                        logger.debug(
                             f"Processed {number_metrics_initial} metrics using {pipeline}. {number_metrics_final} metrics output"
                         )
                     except TypeError:
@@ -198,8 +209,22 @@ class MetricsProcessor:
                             extra={"pipeline": str(pipeline)},
                         )
                         return
+
+                final_count = len(metrics)
                 self.output_buffer.extend(metrics)
                 self.metrics_processed.labels("metrics_processor").inc(len(metrics))
+
+                # Single INFO log for the entire batch
+                logger.info(
+                    "Batch processed",
+                    extra={
+                        "metrics_in": initial_count,
+                        "metrics_out": final_count,
+                        "measurements": sorted(measurements),
+                        "stages": stage_names,
+                        "event": "batch_processed"
+                    }
+                )
 
         except Exception as e:
             logger.error(f"Error processing metrics: {e}", extra={"metrics": metrics})
