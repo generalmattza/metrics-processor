@@ -840,13 +840,17 @@ class TagMapper(MetricsPipeline):
             tags: {"channel": "1", ...}
             tag_mapping_config: {
                 "mapping_file": "config/channel_mappings.toml",
-                "source_tag": "channel"
+                "source_tag": "channel"  # Optional - will be inferred
             }
 
         TOML file (config/channel_mappings.toml):
             [channel.1]
             group = "Outer drum bottom heater TCs"
             label = "Bottom Outer Die, 90° - A1"
+
+            [channel.2]
+            group = "Outer die bottom heater TCs"
+            label = "Bottom Outer Die, 45° - A2"
 
         Output metric:
             fields: {"TT_LHT": 150.5}
@@ -856,6 +860,9 @@ class TagMapper(MetricsPipeline):
                 "label": "Bottom Outer Die, 90° - A1",
                 ...
             }
+
+    Note: Both [channel.1] and ["channel.1"] TOML syntax are supported.
+          Nested structures are automatically flattened.
     """
 
     def __init__(self, config=None) -> None:
@@ -993,11 +1000,14 @@ class TagMapper(MetricsPipeline):
         """
         Load a TOML mapping file, with caching for performance.
 
+        Handles both flat keys (["channel.1"]) and nested structure ([channel.1]).
+        Nested structures are automatically flattened to dot notation.
+
         Args:
             filepath: Path to the TOML file
 
         Returns:
-            Dict with mapping sections, or None if file cannot be loaded
+            Dict with mapping sections (flattened to dot notation), or None if file cannot be loaded
         """
         # Check cache first
         if filepath in self._mapping_cache:
@@ -1006,12 +1016,56 @@ class TagMapper(MetricsPipeline):
         # Load the file
         try:
             mappings = load_toml_file(filepath)
-            self._mapping_cache[filepath] = mappings
-            logger.info(f"Loaded tag mapping file: {filepath}")
-            return mappings
+            # Flatten nested structure if needed
+            flattened = self._flatten_nested_mappings(mappings)
+            self._mapping_cache[filepath] = flattened
+            logger.info(f"Loaded tag mapping file: {filepath} ({len(flattened)} mappings)")
+            return flattened
         except FileNotFoundError:
             logger.error(f"Tag mapping file not found: {filepath}")
             return None
         except Exception as e:
             logger.error(f"Error loading tag mapping file {filepath}: {e}")
             return None
+
+    def _flatten_nested_mappings(self, mappings: dict, parent_key: str = '') -> dict:
+        """
+        Flatten nested TOML structure to dot notation.
+
+        Converts:
+            {"channel": {"1": {"group": "...", "label": "..."}}}
+        To:
+            {"channel.1": {"group": "...", "label": "..."}}
+
+        Args:
+            mappings: Raw dict from TOML file
+            parent_key: Parent key for recursion
+
+        Returns:
+            Flattened dict with dot notation keys
+        """
+        flattened = {}
+
+        for key, value in mappings.items():
+            new_key = f"{parent_key}.{key}" if parent_key else key
+
+            if isinstance(value, dict):
+                # Check if this dict contains mapping values (group, label, etc.)
+                # or if it's another level of nesting
+                has_mapping_keys = any(k in value for k in ['group', 'label'])
+                has_only_dicts = all(isinstance(v, dict) for v in value.values())
+
+                if has_mapping_keys:
+                    # This is a leaf node with actual mappings
+                    flattened[new_key] = value
+                elif has_only_dicts and not has_mapping_keys:
+                    # This is a nested structure, recurse
+                    flattened.update(self._flatten_nested_mappings(value, new_key))
+                else:
+                    # Mixed structure - treat as leaf
+                    flattened[new_key] = value
+            else:
+                # Scalar value - treat as leaf
+                flattened[new_key] = value
+
+        return flattened
