@@ -824,3 +824,194 @@ class PropertyConstructor(MetricsPipeline):
                     metrics[i] = metric | new_properties
 
         return metrics
+
+
+class TagMapper(MetricsPipeline):
+    """
+    Map extracted tags to additional tags using TOML configuration files.
+
+    This pipeline stage looks up tag values in TOML mapping files and adds
+    additional tags based on those mappings. It's designed to work after
+    FieldToTagMapper to enrich metrics with descriptive labels and groups.
+
+    Example:
+        Input metric (after FieldToTagMapper):
+            fields: {"TT_LHT": 150.5}
+            tags: {"channel": "1", ...}
+            tag_mapping_config: {
+                "mapping_file": "config/channel_mappings.toml",
+                "source_tag": "channel"
+            }
+
+        TOML file (config/channel_mappings.toml):
+            [channel.1]
+            group = "Outer drum bottom heater TCs"
+            label = "Bottom Outer Die, 90° - A1"
+
+        Output metric:
+            fields: {"TT_LHT": 150.5}
+            tags: {
+                "channel": "1",
+                "group": "Outer drum bottom heater TCs",
+                "label": "Bottom Outer Die, 90° - A1",
+                ...
+            }
+    """
+
+    def __init__(self, config=None) -> None:
+        super().__init__(config=config)
+        self._mapping_cache = {}  # Cache loaded TOML files for performance
+
+    def process_method(self, metrics):
+        result = []
+        for metric in metrics:
+            # Check if this metric has tag_mapping_config
+            tag_mapping_config = metric.get('tag_mapping_config')
+            if tag_mapping_config:
+                metric = self._apply_tag_mapping(metric, tag_mapping_config)
+                # Remove tag_mapping_config from metric after applying
+                metric.pop('tag_mapping_config', None)
+            result.append(metric)
+        return result
+
+    def _apply_tag_mapping(self, metric: dict, mapping_config: dict) -> dict:
+        """
+        Apply tag mappings from a TOML file to add additional tags.
+
+        Args:
+            metric: The metric dict with fields, tags, measurement, time, etc.
+            mapping_config: Dict with keys:
+                - mapping_file: Path to TOML file with mappings
+                - source_tag: (Optional) Tag name to use as lookup key (e.g., "channel")
+                              If not specified, will be inferred from TOML file structure
+
+        Returns:
+            Modified metric dict with additional tags from the mapping file
+        """
+        mapping_file = mapping_config.get('mapping_file')
+        source_tag = mapping_config.get('source_tag')
+
+        if not mapping_file:
+            logger.warning(f"Invalid tag_mapping_config: {mapping_config}")
+            return metric
+
+        # Load the mapping file (with caching)
+        mappings = self._load_mapping_file(mapping_file)
+        if mappings is None:
+            return metric
+
+        # Get metric tags
+        tags = metric.get('tags', {})
+
+        # If source_tag not specified, infer it from TOML structure
+        if not source_tag:
+            source_tag = self._infer_source_tag(mappings, tags)
+            if not source_tag:
+                logger.debug(
+                    f"Could not infer source_tag from {mapping_file}. "
+                    f"Metric tags: {list(tags.keys())}"
+                )
+                return metric
+
+        # Get the value of the source tag
+        source_value = tags.get(source_tag)
+
+        if source_value is None:
+            logger.debug(
+                f"Source tag '{source_tag}' not found in metric tags. "
+                f"Available tags: {list(tags.keys())}"
+            )
+            return metric
+
+        # Look up the mapping in the TOML file
+        # TOML sections are like [channel.1], [channel.2], etc.
+        section_key = f"{source_tag}.{source_value}"
+        mapped_tags = mappings.get(section_key)
+
+        if mapped_tags is None:
+            logger.debug(
+                f"No mapping found for '{section_key}' in {mapping_file}"
+            )
+            return metric
+
+        # Add the mapped tags to the metric
+        updated_tags = tags.copy()
+        updated_tags.update(mapped_tags)
+        metric['tags'] = updated_tags
+
+        logger.debug(
+            f"Applied tag mapping for '{section_key}': added {list(mapped_tags.keys())}"
+        )
+
+        return metric
+
+    def _infer_source_tag(self, mappings: dict, metric_tags: dict) -> str | None:
+        """
+        Infer the source_tag from TOML file structure and metric tags.
+
+        TOML sections like [channel.1], [channel.2] indicate the source tag is "channel".
+        We extract all unique tag names from section keys and check which one exists in metric_tags.
+
+        Args:
+            mappings: Dict loaded from TOML file
+            metric_tags: Tags from the metric
+
+        Returns:
+            Inferred source tag name, or None if cannot determine
+        """
+        # Extract unique tag names from TOML section keys (e.g., "channel" from "channel.1")
+        tag_names = set()
+        for section_key in mappings.keys():
+            if '.' in section_key:
+                tag_name = section_key.split('.', 1)[0]
+                tag_names.add(tag_name)
+
+        if not tag_names:
+            logger.warning(f"No tag mappings found in TOML sections")
+            return None
+
+        # Find which tag name exists in metric tags
+        matching_tags = [tag for tag in tag_names if tag in metric_tags]
+
+        if len(matching_tags) == 0:
+            logger.debug(
+                f"None of the TOML tag names {tag_names} found in metric tags {list(metric_tags.keys())}"
+            )
+            return None
+        elif len(matching_tags) == 1:
+            logger.debug(f"Inferred source_tag: {matching_tags[0]}")
+            return matching_tags[0]
+        else:
+            # Multiple matching tags - use the first one but log a warning
+            logger.warning(
+                f"Multiple matching tag names found: {matching_tags}. "
+                f"Using '{matching_tags[0]}'. Consider specifying source_tag explicitly."
+            )
+            return matching_tags[0]
+
+    def _load_mapping_file(self, filepath: str) -> dict | None:
+        """
+        Load a TOML mapping file, with caching for performance.
+
+        Args:
+            filepath: Path to the TOML file
+
+        Returns:
+            Dict with mapping sections, or None if file cannot be loaded
+        """
+        # Check cache first
+        if filepath in self._mapping_cache:
+            return self._mapping_cache[filepath]
+
+        # Load the file
+        try:
+            mappings = load_toml_file(filepath)
+            self._mapping_cache[filepath] = mappings
+            logger.info(f"Loaded tag mapping file: {filepath}")
+            return mappings
+        except FileNotFoundError:
+            logger.error(f"Tag mapping file not found: {filepath}")
+            return None
+        except Exception as e:
+            logger.error(f"Error loading tag mapping file {filepath}: {e}")
+            return None
