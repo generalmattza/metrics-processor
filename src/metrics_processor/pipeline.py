@@ -412,6 +412,10 @@ class FieldToTagMapper(MetricsPipeline):
             tags: {...existing_tags..., "channel": "1"}
     """
 
+    def __init__(self, config=None) -> None:
+        super().__init__(config=config)
+        self._pattern_cache = {}  # Cache compiled regex patterns for performance
+
     def process_method(self, metrics):
         result = []
         for metric in metrics:
@@ -443,11 +447,15 @@ class FieldToTagMapper(MetricsPipeline):
             logger.warning(f"Invalid expansion_pattern config: {pattern_config}")
             return metric
 
-        try:
-            pattern = re.compile(pattern_str)
-        except re.error as e:
-            logger.error(f"Invalid regex pattern '{pattern_str}': {e}")
-            return metric
+        # Use cached compiled pattern for performance (avoids re-compiling on every metric)
+        if pattern_str not in self._pattern_cache:
+            try:
+                self._pattern_cache[pattern_str] = re.compile(pattern_str)
+            except re.error as e:
+                logger.error(f"Invalid regex pattern '{pattern_str}': {e}")
+                return metric
+
+        pattern = self._pattern_cache[pattern_str]
 
         # Process each field in the metric
         new_fields = {}
@@ -868,6 +876,7 @@ class TagMapper(MetricsPipeline):
     def __init__(self, config=None) -> None:
         super().__init__(config=config)
         self._mapping_cache = {}  # Cache loaded TOML files for performance
+        self._source_tag_cache = {}  # Cache inferred source_tag per mapping file
 
     def process_method(self, metrics):
         result = []
@@ -910,15 +919,22 @@ class TagMapper(MetricsPipeline):
         # Get metric tags
         tags = metric.get('tags', {})
 
-        # If source_tag not specified, infer it from TOML structure
+        # If source_tag not specified, infer it from TOML structure (with caching)
         if not source_tag:
-            source_tag = self._infer_source_tag(mappings, tags)
-            if not source_tag:
-                logger.debug(
-                    f"Could not infer source_tag from {mapping_file}. "
-                    f"Metric tags: {list(tags.keys())}"
-                )
-                return metric
+            # Check cache first
+            if mapping_file in self._source_tag_cache:
+                source_tag = self._source_tag_cache[mapping_file]
+            else:
+                source_tag = self._infer_source_tag(mappings, tags)
+                if source_tag:
+                    # Cache the inferred source_tag for this mapping file
+                    self._source_tag_cache[mapping_file] = source_tag
+                else:
+                    logger.debug(
+                        f"Could not infer source_tag from {mapping_file}. "
+                        f"Metric tags: {list(tags.keys())}"
+                    )
+                    return metric
 
         # Get the value of the source tag
         source_value = tags.get(source_tag)
