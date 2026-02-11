@@ -392,24 +392,20 @@ class FieldExpander(MetricsPipeline):
 
 class FieldToTagMapper(MetricsPipeline):
     """
-    Transform field names to field+tag combinations based on expansion_pattern.
+    Transform field names via regex-based field_transform config.
 
-    This pipeline stage applies regex-based transformations to field names,
-    extracting portions of the field name into tags while standardizing the field name.
+    Renames fields by pattern match (e.g. stripping namespace prefixes)
+    and optionally extracts portions of the field name into tags or context.
 
     Example:
         Input metric:
-            fields: {"DUTY_CYCLE_1": 45.2}
-            expansion_pattern:
-                pattern: "^DUTY_CYCLE_(\\d+)$"
-                field_name: "DUTY_CYCLE"
-                extract_tags:
-                    - name: "channel"
-                      group: 1
+            fields: {"IO_Internal_AI_PV.DUTY_CYCLE_1": 45.2}
+            field_transform:
+                pattern: "^IO_Internal_AI_PV\\.(DUTY_CYCLE_\\d+)$"
+                field_name: "$1"
 
         Output metric:
-            fields: {"DUTY_CYCLE": 45.2}
-            tags: {...existing_tags..., "channel": "1"}
+            fields: {"DUTY_CYCLE_1": 45.2}
     """
 
     def __init__(self, config=None) -> None:
@@ -419,18 +415,16 @@ class FieldToTagMapper(MetricsPipeline):
     def process_method(self, metrics):
         result = []
         for metric in metrics:
-            # Check if this metric has an expansion_pattern
-            expansion_pattern = metric.get('expansion_pattern')
-            if expansion_pattern:
-                metric = self._apply_expansion_pattern(metric, expansion_pattern)
-                # Remove expansion_pattern from metric after applying
-                metric.pop('expansion_pattern', None)
+            field_transform = metric.get('field_transform')
+            if field_transform:
+                metric = self._apply_field_transform(metric, field_transform)
+                metric.pop('field_transform', None)
             result.append(metric)
         return result
 
-    def _apply_expansion_pattern(self, metric: dict, pattern_config: dict) -> dict:
+    def _apply_field_transform(self, metric: dict, pattern_config: dict) -> dict:
         """
-        Apply the expansion pattern to transform field names into field+tag combinations.
+        Apply the field transform to rename fields and optionally extract tags.
 
         Args:
             metric: The metric dict with fields, tags, measurement, time, etc.
@@ -444,7 +438,7 @@ class FieldToTagMapper(MetricsPipeline):
         extract_tags = pattern_config.get('extract_tags', [])
 
         if not pattern_str or not new_field_name:
-            logger.warning(f"Invalid expansion_pattern config: {pattern_config}")
+            logger.warning(f"Invalid field_transform config: {pattern_config}")
             return metric
 
         # Use cached compiled pattern for performance (avoids re-compiling on every metric)
@@ -460,22 +454,40 @@ class FieldToTagMapper(MetricsPipeline):
         # Process each field in the metric
         new_fields = {}
         updated_tags = metric.get('tags', {}).copy()
+        updated_context = metric.get('context', {}).copy()
 
         for field_name, field_value in metric.get('fields', {}).items():
             match = pattern.match(field_name)
             if match:
                 # Pattern matched - transform the field
-                new_fields[new_field_name] = field_value
+                resolved_field_name = new_field_name
+                if '$' in new_field_name:
+                    def replace_group_ref(m):
+                        group_num = int(m.group(1))
+                        try:
+                            return match.group(group_num)
+                        except IndexError:
+                            logger.warning(
+                                f"Regex group {group_num} not found in pattern '{pattern_str}' "
+                                f"for field_name reference '${group_num}'"
+                            )
+                            return m.group(0)
+                    resolved_field_name = re.sub(r'\$(\d+)', replace_group_ref, new_field_name)
+                new_fields[resolved_field_name] = field_value
 
                 # Extract tags from capture groups
                 for tag_config in extract_tags:
                     tag_name = tag_config.get('name')
                     group_num = tag_config.get('group')
+                    target = tag_config.get('target', 'tags')
 
                     if tag_name and group_num is not None:
                         try:
                             tag_value = match.group(group_num)
-                            updated_tags[tag_name] = str(tag_value)
+                            if target == 'context':
+                                updated_context[tag_name] = str(tag_value)
+                            else:
+                                updated_tags[tag_name] = str(tag_value)
                         except IndexError:
                             logger.warning(
                                 f"Regex group {group_num} not found in pattern '{pattern_str}' "
@@ -488,6 +500,8 @@ class FieldToTagMapper(MetricsPipeline):
         # Update metric with new fields and tags
         metric['fields'] = new_fields
         metric['tags'] = updated_tags
+        if updated_context:
+            metric['context'] = updated_context
 
         return metric
 
@@ -925,19 +939,18 @@ class TagMapper(MetricsPipeline):
             if mapping_file in self._source_tag_cache:
                 source_tag = self._source_tag_cache[mapping_file]
             else:
-                source_tag = self._infer_source_tag(mappings, tags)
+                source_tag = self._infer_source_tag(mappings)
                 if source_tag:
                     # Cache the inferred source_tag for this mapping file
                     self._source_tag_cache[mapping_file] = source_tag
                 else:
                     logger.debug(
-                        f"Could not infer source_tag from {mapping_file}. "
-                        f"Metric tags: {list(tags.keys())}"
+                        f"Could not infer source_tag from {mapping_file}."
                     )
                     return metric
 
-        # Get the value of the source tag
-        source_value = tags.get(source_tag)
+        # Get the value of the source tag (check context as fallback)
+        source_value = tags.get(source_tag) or metric.get('context', {}).get(source_tag)
 
         if source_value is None:
             logger.debug(
@@ -960,6 +973,7 @@ class TagMapper(MetricsPipeline):
         # Add the mapped tags to the metric
         updated_tags = tags.copy()
         updated_tags.update(mapped_tags)
+
         metric['tags'] = updated_tags
 
         logger.debug(
@@ -968,21 +982,21 @@ class TagMapper(MetricsPipeline):
 
         return metric
 
-    def _infer_source_tag(self, mappings: dict, metric_tags: dict) -> str | None:
+    def _infer_source_tag(self, mappings: dict) -> str | None:
         """
-        Infer the source_tag from TOML file structure and metric tags.
+        Infer the source_tag from TOML file structure.
 
-        TOML sections like [channel.1], [channel.2] indicate the source tag is "channel".
-        We extract all unique tag names from section keys and check which one exists in metric_tags.
+        TOML sections like [data_name."IO_Internal_AI_PV.TT_LHT_1"] indicate
+        the source tag is "data_name". If all section keys share the same prefix,
+        that prefix is the source tag.
 
         Args:
             mappings: Dict loaded from TOML file
-            metric_tags: Tags from the metric
 
         Returns:
             Inferred source tag name, or None if cannot determine
         """
-        # Extract unique tag names from TOML section keys (e.g., "channel" from "channel.1")
+        # Extract unique tag names from TOML section keys (e.g., "data_name" from "data_name.X")
         tag_names = set()
         for section_key in mappings.keys():
             if '.' in section_key:
@@ -993,24 +1007,16 @@ class TagMapper(MetricsPipeline):
             logger.warning(f"No tag mappings found in TOML sections")
             return None
 
-        # Find which tag name exists in metric tags
-        matching_tags = [tag for tag in tag_names if tag in metric_tags]
-
-        if len(matching_tags) == 0:
-            logger.debug(
-                f"None of the TOML tag names {tag_names} found in metric tags {list(metric_tags.keys())}"
+        if len(tag_names) == 1:
+            source_tag = tag_names.pop()
+            logger.debug(f"Inferred source_tag: {source_tag}")
+            return source_tag
+        else:
+            logger.warning(
+                f"Multiple tag name prefixes found in TOML: {tag_names}. "
+                f"Cannot infer source_tag — specify it explicitly in tag_mapping_config."
             )
             return None
-        elif len(matching_tags) == 1:
-            logger.debug(f"Inferred source_tag: {matching_tags[0]}")
-            return matching_tags[0]
-        else:
-            # Multiple matching tags - use the first one but log a warning
-            logger.warning(
-                f"Multiple matching tag names found: {matching_tags}. "
-                f"Using '{matching_tags[0]}'. Consider specifying source_tag explicitly."
-            )
-            return matching_tags[0]
 
     def _load_mapping_file(self, filepath: str) -> dict | None:
         """
