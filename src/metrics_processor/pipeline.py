@@ -210,21 +210,21 @@ class MetricStats:
 
 class MetricsPipeline(ABC):
 
-    processing_time = Histogram(
-        "metrics_processor_pipeline_processing_time",
-        "Average time taken to process a metric",
+    processing_duration_seconds = Histogram(
+        "metrics_processor_pipeline_processing_duration_seconds",
+        "Per-metric processing duration within a pipeline stage (seconds)",
         ["pipeline"],
     )
 
-    metrics_processed = Counter(
-        "metrics_processor_pipeline_metrics_processed",
-        "Number of metrics processed",
+    metrics_processed_total = Counter(
+        "metrics_processor_pipeline_metrics_processed_total",
+        "Number of metrics processed by a pipeline stage",
         ["pipeline"],
     )
 
-    metrics_filtered = Counter(
-        "metrics_processor_pipeline_metrics_filtered",
-        "Number of metrics filtered out",
+    metrics_filtered_total = Counter(
+        "metrics_processor_pipeline_metrics_filtered_total",
+        "Number of metrics filtered out by a pipeline stage",
         ["pipeline", "id", "reason"],
     )
 
@@ -267,10 +267,10 @@ class MetricsPipeline(ABC):
         end_time = time.perf_counter()
 
         if number_of_metrics != 0:
-            self.processing_time.labels(
+            self.processing_duration_seconds.labels(
                 pipeline=self.__class__.__name__
             ).observe((end_time - start_time) / number_of_metrics)
-            self.metrics_processed.labels(
+            self.metrics_processed_total.labels(
                 pipeline=self.__class__.__name__
             ).inc(number_of_metrics)
         return results
@@ -286,7 +286,7 @@ class MetricsPipeline(ABC):
         number_metrics_initial = len(metrics)
         metrics = [metric for metric in metrics if metric is not None]
         number_metrics_final = len(metrics)
-        self.metrics_filtered.labels(
+        self.metrics_filtered_total.labels(
             pipeline=self.__class__.__name__,
             id="None",
             reason="Invalid metric",
@@ -638,7 +638,7 @@ class OutlierRemover(MetricsPipeline):
                     and field_value > metric_boundaries["max"]
                 ):
                     metrics_removed.append(metric)
-                    self.metrics_filtered.labels(
+                    self.metrics_filtered_total.labels(
                         pipeline=self.__class__.__name__,
                         id=field,
                         reason="Value excceeded max",
@@ -653,7 +653,7 @@ class OutlierRemover(MetricsPipeline):
                     and field_value < metric_boundaries["min"]
                 ):
                     metrics_removed.append(metric)
-                    self.metrics_filtered.labels(
+                    self.metrics_filtered_total.labels(
                         pipeline=self.__class__.__name__,
                         id=field,
                         reason="Value below min",

@@ -109,12 +109,12 @@ class MetricsProcessor:
     # Initialize prometheus metrics
     buffer_occupancy = Gauge(
         "metrics_processor_buffer_occupancy",
-        "The occupancy of the buffer",
+        "Current item count in the processor's input/output buffer",
         ["buffer"],
     )
-    metrics_processed = Counter(
-        "metrics_processor_metrics_processed",
-        "The number of metrics processed",
+    input_dequeued_total = Counter(
+        "metrics_processor_input_dequeued_total",
+        "Number of metrics dequeued from the input buffer and emitted to the output buffer",
     )
 
     def __init__(
@@ -211,7 +211,7 @@ class MetricsProcessor:
 
                 final_count = len(metrics)
                 self.output_buffer.extend(metrics)
-                self.metrics_processed.inc(len(metrics))
+                self.input_dequeued_total.inc(len(metrics))
 
                 # Single INFO log for the entire batch
                 logger.info(
