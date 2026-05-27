@@ -15,7 +15,7 @@ import logging
 from typing import Union
 from pathlib import Path
 
-from prometheus_client import Gauge, Counter, start_http_server
+from prometheus_client import Gauge, Counter
 from metrics_processor.exceptions import ConfigFileDoesNotExist
 
 from buffered.buffer import Buffer
@@ -261,16 +261,7 @@ class MetricsProcessor:
         self.processing_thread.join()
         logger.debug(f"Stopped processing metrics in thread {self.processing_thread}")
 
-    def start_prometheus_server(self, port=8000):
-        # Start Prometheus HTTP server
-        start_http_server(port)
-        logger.info(f"Prometheus server started on port {port}")
-
     def start(self):
-        if self.config["prometheus"]["enable_prometheus_server"]:
-            self.start_prometheus_server(
-                port=self.config["prometheus"]["prometheus_port"]
-            )
         self.processing_thread = threading.Thread(
             target=self.run_processing, daemon=True
         )
