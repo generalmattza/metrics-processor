@@ -244,13 +244,19 @@ class MetricsProcessor:
     # *************************************************************************
 
     def run_processing(self):
+        # 10 ms idle sleep keeps pipeline latency well under any upstream
+        # poll cadence while preventing the loop from saturating a core when
+        # the input buffer is empty.
+        idle_sleep_s = 0.010
         while True:
-            if self.pipelines:
-                self.process_input_buffer()
+            if self.input_buffer.not_empty():
+                if self.pipelines:
+                    self.process_input_buffer()
+                else:
+                    self.passthrough()
+                self.update_prometheus_metrics()
             else:
-                self.passthrough()
-
-            self.update_prometheus_metrics()
+                time.sleep(idle_sleep_s)
 
     def stop(self):
         self.processing_thread.join()
