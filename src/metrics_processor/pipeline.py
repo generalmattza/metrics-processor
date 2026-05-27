@@ -211,21 +211,21 @@ class MetricStats:
 class MetricsPipeline(ABC):
 
     processing_time = Histogram(
-        "metrics_processor_processing_time",
+        "metrics_processor_pipeline_processing_time",
         "Average time taken to process a metric",
-        ["agent", "pipeline"],
+        ["pipeline"],
     )
 
     metrics_processed = Counter(
-        "metrics_processed_pipeline",
+        "metrics_processor_pipeline_metrics_processed",
         "Number of metrics processed",
-        ["agent", "pipeline"],
+        ["pipeline"],
     )
 
     metrics_filtered = Counter(
-        "metricsprocessor_metrics_filtered",
+        "metrics_processor_pipeline_metrics_filtered",
         "Number of metrics filtered out",
-        ["agent", "pipeline", "id", "reason"],
+        ["pipeline", "id", "reason"],
     )
 
     def __init__(self, config=None) -> None:
@@ -268,10 +268,10 @@ class MetricsPipeline(ABC):
 
         if number_of_metrics != 0:
             self.processing_time.labels(
-                agent="metrics_processor", pipeline=self.__class__.__name__
+                pipeline=self.__class__.__name__
             ).observe((end_time - start_time) / number_of_metrics)
             self.metrics_processed.labels(
-                agent="metrics_processor", pipeline=self.__class__.__name__
+                pipeline=self.__class__.__name__
             ).inc(number_of_metrics)
         return results
 
@@ -287,7 +287,6 @@ class MetricsPipeline(ABC):
         metrics = [metric for metric in metrics if metric is not None]
         number_metrics_final = len(metrics)
         self.metrics_filtered.labels(
-            agent="metrics_processor",
             pipeline=self.__class__.__name__,
             id="None",
             reason="Invalid metric",
@@ -640,7 +639,6 @@ class OutlierRemover(MetricsPipeline):
                 ):
                     metrics_removed.append(metric)
                     self.metrics_filtered.labels(
-                        agent="metrics_processor",
                         pipeline=self.__class__.__name__,
                         id=field,
                         reason="Value excceeded max",
@@ -656,7 +654,6 @@ class OutlierRemover(MetricsPipeline):
                 ):
                     metrics_removed.append(metric)
                     self.metrics_filtered.labels(
-                        agent="metrics_processor",
                         pipeline=self.__class__.__name__,
                         id=field,
                         reason="Value below min",

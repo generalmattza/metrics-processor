@@ -108,14 +108,13 @@ class MetricsProcessor:
 
     # Initialize prometheus metrics
     buffer_occupancy = Gauge(
-        "metricsprocessor_buffer_occupancy",
+        "metrics_processor_buffer_occupancy",
         "The occupancy of the buffer",
-        ["agent", "buffer"],
+        ["buffer"],
     )
     metrics_processed = Counter(
-        "metricsprocessor_metrics_processed",
+        "metrics_processor_metrics_processed",
         "The number of metrics processed",
-        ["agent"],
     )
 
     def __init__(
@@ -212,7 +211,7 @@ class MetricsProcessor:
 
                 final_count = len(metrics)
                 self.output_buffer.extend(metrics)
-                self.metrics_processed.labels("metrics_processor").inc(len(metrics))
+                self.metrics_processed.inc(len(metrics))
 
                 # Single INFO log for the entire batch
                 logger.info(
@@ -238,12 +237,8 @@ class MetricsProcessor:
 
     def update_prometheus_metrics(self):
         # Update prometheus metrics
-        self.buffer_occupancy.labels("metrics_processor", "input").set(
-            self.input_buffer.size()
-        )
-        self.buffer_occupancy.labels("metrics_processor", "output").set(
-            self.output_buffer.size()
-        )
+        self.buffer_occupancy.labels("input").set(self.input_buffer.size())
+        self.buffer_occupancy.labels("output").set(self.output_buffer.size())
 
     # Thread management methods
     # *************************************************************************
